@@ -9,10 +9,10 @@ export default defineConfig({
   },
   resolve: {
     alias: {
-      '@domain': path.resolve(__dirname, './src/domain'),
-      '@db': path.resolve(__dirname, './src/db'),
-      '@server': path.resolve(__dirname, './src/server'),
-      '@web': path.resolve(__dirname, './src/web'),
+      '@domain': path.resolve(import.meta.dirname, './src/domain'),
+      '@db': path.resolve(import.meta.dirname, './src/db'),
+      '@server': path.resolve(import.meta.dirname, './src/server'),
+      '@web': path.resolve(import.meta.dirname, './src/web'),
     },
   },
 });
