@@ -5,17 +5,17 @@ Projekt **SubTrack** ma na celu stworzenie niezależnego, prywatnego systemu do 
 
 Głównym zadaniem systemu jest eliminacja zjawiska tzw. *subscription fatigue* (niekontrolowanego odpływu kapitału przez zapomniane subskrypcje i okresy próbne) oraz zapobieganie sytuacjom blokady usług z powodu wygaśnięcia kart płatniczych.
 
-### Etap 1: walidacja na sobie
+### Etap 1 (MVP): walidacja na sobie — aplikacja osobista na desktop
 Pierwsza wersja służy sprawdzeniu, czy aplikacja jest przydatna w codziennym użyciu. Z tego wynikają założenia:
-*   **Jeden użytkownik** (właściciel). Współużytkownicy planów rodzinnych są lokalnymi profilami, a nie kontami.
-*   **Web-first:** aplikacja webowa, responsywna, używana z przeglądarki na PC oraz na iPhonie (Safari, „Dodaj do ekranu głównego” jako PWA).
+*   **Jeden użytkownik (użytek osobisty):** MVP skupia się na własnych subskrypcjach, usługach on-demand i metodach płatności. Moduł współdzielenia kosztów i rozliczeń między osobami został świadomie odroczony do osobnej iteracji (sekcja 7).
+*   **Web-first (desktop):** aplikacja webowa zoptymalizowana w pierwszej kolejności pod przeglądarki desktopowe na Windowsie (np. Brave), z zachowaniem responsywności i czystego REST API pod przyszłą aplikację mobilną.
 *   **Dane lokalnie:** mały serwer + plik SQLite, uruchamiany na prywatnym sprzęcie. Bez chmury i bez kont.
-*   Aplikacja mobilna (iOS/Android) i hosting w chmurze powstają dopiero, jeśli etap 1 się sprawdzi (patrz sekcja 7).
+*   Aplikacja mobilna (iOS/Android), współdzielenie kosztów i hosting w chmurze powstają w kolejnych etapach (patrz sekcja 7).
 
 ### Założenia stałe
 *   **Autonomia:** w czasie działania aplikacja nie korzysta z żadnych zewnętrznych usług sieciowych (API, CDN, kursy walut, AI). Wyjątki mogą dotyczyć tylko integracji, które użytkownik świadomie włączy i skonfiguruje (np. powiadomienia push w wersji 1.1).
-*   **Bezpieczeństwo danych:** aplikacja kategorycznie **nie gromadzi** wrażliwych danych finansowych (pełne numery kart, kody CVV/CVC, hasła bankowe). Przechowywane są wyłącznie nazwy własne i terminy ważności instrumentów płatniczych podane manualnie przez użytkownika.
-*   **Gotowość na wzrost:** model danych i podział kodu mają pozwolić na późniejsze przejście do chmury i dodanie klienta mobilnego bez przepisywania logiki (patrz sekcja 2.3).
+*   **Bezpieczeństwo danych:** aplikacja kategorycznie **nie gromadzi** wrażliwych danych finansowych (pełne numery kart, kody CVV/CVC, hasła bankowe). Przechowywane są wyłącznie nazwy własne, opcjonalnie ostatnie 4 cyfry karty (`last4`) oraz terminy ważności instrumentów płatniczych podane manualnie przez użytkownika.
+*   **Gotowość na wzrost:** model danych i podział kodu mają pozwolić na późniejsze dodanie współdzielenia kosztów, klienta mobilnego oraz przejście do chmury bez przepisywania logiki (patrz sekcja 2.3).
 
 ---
 
@@ -25,38 +25,43 @@ Pierwsza wersja służy sprawdzeniu, czy aplikacja jest przydatna w codziennym u
 | Warstwa | Technologia |
 |---|---|
 | Język | TypeScript (cały projekt) |
-| Frontend | React + Vite, PWA (manifest, ikona, instalacja na iPhonie) |
+| Frontend | React + Vite + Tailwind CSS |
 | API | Hono na Node.js, REST/JSON |
-| Baza danych | SQLite (better-sqlite3) + Drizzle ORM z migracjami |
-| Daty | date-fns (operacje wyłącznie na datach bez godzin) |
+| Baza danych | SQLite (`better-sqlite3`) + Drizzle ORM z migracjami |
+| Daty | `date-fns` (operacje wyłącznie na datach bez godzin) |
+| Jakość | ESLint (`npm run lint`) + `tsc --noEmit` (`npm run typecheck`) |
 | Testy | Vitest |
 | Uruchomienie | jeden proces Node serwuje API i zbudowany frontend; opcjonalnie obraz Docker |
 
 ### 2.2 Struktura kodu
 ```
 src/
-  domain/   # czysta logika bez I/O: daty i cykle, podział kosztów, generator należności, alerty, migracja karty
-  db/       # schemat Drizzle, migracje, repozytoria
-  server/   # Hono: endpointy REST, scheduler, backup, konfiguracja
+  domain/   # czysta logika bez I/O: daty i cykle, generator zdarzeń płatności, alerty, migracja karty, wyliczenia kosztów
+  db/       # schemat Drizzle, migracje SQL, repozytoria
+  server/   # Hono: endpointy REST, uwierzytelnianie, scheduler, backup, konfiguracja
   web/      # React: widoki i komponenty, klient API
 tests/      # testy (przede wszystkim domain/)
 ```
-*   `domain/` nie importuje niczego z `db/`, `server/` ani `web/`. To warunek późniejszego współdzielenia logiki z aplikacją mobilną i backendem w chmurze.
+*   `domain/` nie importuje niczego z `db/`, `server/` ani `web/` (wymuszane automatycznie przez regułę ESLint). To warunek późniejszego współdzielenia logiki z aplikacją mobilną i backendem w chmurze.
 *   `web/` komunikuje się z danymi wyłącznie przez REST API. Nie ma bezpośredniego dostępu do bazy.
 *   `server/` korzysta z bazy wyłącznie przez repozytoria z `db/`.
 
 ### 2.3 Zasady przygotowujące pod chmurę i mobile
 *   Klucze główne to **UUID (v7)**, nie autoinkrement.
 *   Każda tabela ma kolumny `created_at`, `updated_at`, `deleted_at`.
-*   **Soft-delete:** rekordy oznacza się w `deleted_at` zamiast je usuwać. Rekordów finansowych (zdarzenia płatności, należności) nie usuwa się nigdy.
+*   **Soft-delete:** rekordy oznacza się w `deleted_at` zamiast je usuwać. Rekordów finansowych (`billing_events`) nie usuwa się nigdy.
 *   **Kwoty** to liczby całkowite w jednostkach podstawowych waluty (grosze, centy) + kod waluty ISO 4217. Bez typów zmiennoprzecinkowych.
-*   **Migracje schematu** od pierwszego dnia. Baza zawsze powstaje wyłącznie z migracji.
+*   **Migracje schematu** od pierwszego dnia. Baza zawsze powstaje wyłącznie z migracji Drizzle.
 *   REST API projektowane tak, by mógł z niego korzystać także przyszły klient mobilny.
 
-### 2.4 Dostęp i backup
-*   Domyślnie serwer nasłuchuje tylko na `127.0.0.1`. Nasłuch w sieci lokalnej (dostęp z iPhone'a) wymaga ustawienia hasła w zmiennej środowiskowej `APP_PASSWORD`. Bez hasła serwer odmawia startu w tym trybie.
+### 2.4 Dostęp, uwierzytelnianie i backup
+*   **Tryb lokalny (domyślny):** serwer nasłuchuje wyłącznie na `127.0.0.1` bez wymogu logowania.
+*   **Tryb sieciowy:** nasłuch w sieci lokalnej wymaga ustawienia hasła w zmiennej środowiskowej `APP_PASSWORD`. Bez hasła serwer odmawia startu w tym trybie.
+    *   Gdy `APP_PASSWORD` jest ustawione, UI pokazuje ekran logowania; serwer wystawia sesję w cookie `HttpOnly` oraz akceptuje nagłówek `Authorization: Bearer` (pod przyszłego klienta mobilnego).
 *   **Backup automatyczny:** raz dziennie `VACUUM INTO` do katalogu `backups/`, z retencją ostatnich 14 kopii.
-*   **Eksport/import JSON** całej bazy z poziomu UI, jako przenośna kopia i przyszła ścieżka migracji do chmury.
+*   **Eksport/import JSON** całej bazy z poziomu UI (zawiera wersję schematu oraz wszystkie tabele wraz z rekordami `deleted_at` i historią płatności):
+    *   Import działa jako **pełne odtworzenie stanu w jednej transakcji** po uprzedniej walidacji struktury i spójności danych.
+    *   Przed nadpisaniem danych import automatycznie zapisuje kopię zapasową aktualnej bazy w `backups/`. W razie błędu transakcja jest wycofywana.
 
 ---
 
@@ -64,52 +69,41 @@ tests/      # testy (przede wszystkim domain/)
 
 ### 3.1 Moduł portfela i metod płatności
 *   **Rejestr metod płatności** z typami:
-    *   `card`: karta fizyczna (nazwa własna, marka: Visa/Mastercard/Amex/inna, data ważności MM/RR),
+    *   `card`: karta fizyczna lub wirtualna (nazwa własna, marka: Visa/Mastercard/Amex/inna, opcjonalnie ostatnie 4 cyfry `last4`, data ważności `MM/RR`),
     *   `wallet`: portfel lub pośrednik (PayPal, Apple Pay, Google Pay, Revolut…),
     *   `store_account`: konto sklepu z aplikacjami (Apple ID, Google Play), przez które idzie wiele subskrypcji,
     *   `bank_account`: rachunek (polecenie zapłaty, przelew cykliczny),
     *   `carrier_billing`: doliczanie do rachunku operatora,
     *   `other`.
-*   **Zależności wielopoziomowe:** każda metoda inna niż karta może wskazywać metodę, która ją finansuje (np. Apple ID → karta, PayPal → karta). W MVP jedna metoda finansująca na pośrednika. Łańcuch nie może zawierać cykli, a jego maksymalna głębokość to 5.
-*   **Wymiana karty:** przy wpisaniu nowej karty można wskazać, którą kartę zastępuje (`replaces`). To uruchamia migrację (3.1, ostatni punkt).
-*   **Alerty ważności:** karta jest ważna do ostatniego dnia miesiąca z daty MM/RR. Alert pojawia się po przekroczeniu progów (domyślnie 60, 30 i 7 dni przed wygaśnięciem; progi konfigurowalne w ustawieniach).
+*   **Zależności wielopoziomowe:** każda metoda inna niż karta może wskazywać jedną metodę, która ją finansuje (np. Apple ID → karta, PayPal → karta). Łańcuch nie może zawierać cykli, a jego maksymalna głębokość to 5.
+*   **Wymiana karty:** przy wpisaniu nowej karty można wskazać, którą kartę zastępuje (`replaces_id`). Uruchamia to migrację karty (albo dopina nową kartę do istniejącej otwartej migracji bez wskazanej nowej karty).
+*   **Alerty ważności:** karta jest ważna do ostatniego dnia miesiąca z daty `MM/RR`. Alert pojawia się po przekroczeniu progów (domyślnie 60, 30 i 7 dni przed wygaśnięciem; progi konfigurowalne w ustawieniach).
 *   **Migracja karty (checklista):** dla wygasającej lub zastępowanej karty system generuje listę miejsc do aktualizacji:
-    *   usługi opłacane **bezpośrednio** tą kartą (pozycja per usługa),
-    *   **pośrednicy** finansowani tą kartą (jedna pozycja per pośrednik, bo jego aktualizacja naprawia wszystkie usługi za nim). Usługi za pośrednikiem są wyświetlane informacyjnie pod pozycją pośrednika.
-
-    Każdą pozycję można odhaczyć jako „zaktualizowano”. Odhaczenie przepina powiązanie na nową kartę (jeśli wskazano), a postęp migracji jest zapamiętywany.
+    *   usługi (`subscription` oraz `on_demand` o statusie `active`, `trial` lub `paused` — z pominięciem `cancelled` i usuniętych) opłacane **bezpośrednio** tą kartą (pozycja per usługa),
+    *   niezarchiwizowani **pośrednicy** finansowani tą kartą (jedna pozycja per pośrednik, bo jego aktualizacja naprawia wszystkie usługi za nim). Usługi za pośrednikiem są wyświetlane informacyjnie pod pozycją pośrednika.
+    *   Migrację można utworzyć również **zanim** użytkownik otrzyma nową kartę (`new_method_id = null`). Jeśli później zostanie dodana karta z `replaces_id` na tę samą starą kartę, dopina się ona do otwartej migracji.
+    *   Każdą pozycję można odhaczyć jako „zaktualizowano” (`done_at`). Jeśli wskazano `new_method_id`, odhaczenie automatycznie przepina powiązanie usługi lub pośrednika na nową kartę.
+    *   Po odhaczeniu ostatniej pozycji migracja oznacza się jako zakończona (`completed_at`), a jeśli wskazano `new_method_id`, stara karta jest automatycznie archiwizowana (`archived_at`).
 
 ### 3.2 Moduł usług i subskrypcji
-*   **Subskrypcje:** nazwa, kategoria, kwota, waluta, cykl rozliczeniowy (co N tygodni, miesięcy lub lat), data kolejnej płatności, metoda płatności, płatnik (domyślnie właściciel), notatka.
+*   **Subskrypcje:** nazwa, kategoria, kwota, waluta, cykl rozliczeniowy (co `N` tygodni, miesięcy lub lat), data kolejnej płatności (`billing_anchor_date`), metoda płatności, notatka.
 *   **Statusy subskrypcji:**
-    *   `trial`: okres próbny z datą końca. Pierwsza płatność następuje w dniu końca trialu. Alert pojawia się 3 dni przed końcem (konfigurowalne).
-    *   `active`.
-    *   `paused`: nie generuje płatności. Wznowienie wymaga podania nowej daty kolejnej płatności.
-    *   `cancelled`: z datą „opłacone do”. Po tej dacie nie generuje płatności.
-*   **Historia cen:** zmiana kwoty zapisuje nową cenę z datą obowiązywania. Płatności sprzed tej daty zachowują starą kwotę.
-*   **Usługi On-Demand:** rejestracja aplikacji bez abonamentu (Bolt, Uber, Glovo…) z przypisaną metodą płatności, w celu monitorowania jej integralności (te usługi też trafiają do migracji karty).
+    *   `trial`: okres próbny z datą końca (`trial_ends_at`). `billing_anchor_date` ustawia się automatycznie na `trial_ends_at`. Pierwsza płatność następuje w dniu końca trialu, a scheduler automatycznie przełącza wtedy status na `active`. Alert pojawia się 3 dni przed końcem (konfigurowalne).
+    *   `active`: generuje płatności zgodnie z cyklem.
+    *   `paused`: nie generuje płatności. Wznowienie (`paused` → `active`) wymaga podania nowej daty kolejnej płatności, która nadpisuje `billing_anchor_date` (okres przerwy nie jest nadrabiany).
+    *   `cancelled`: z datą „opłacone do” (`paid_until`). Generuje ewentualne płatności tylko do `paid_until` włącznie; po tej dacie wygasa.
+*   **Historia cen:** zmiana kwoty zapisuje nową cenę z datą obowiązywania (`valid_from`). Płatności sprzed tej daty zachowują starą kwotę. Maksymalnie jedna cena na ten sam dzień `valid_from` dla jednej usługi (korekta w tym samym dniu nadpisuje wpis).
+*   **Usługi On-Demand:** rejestracja aplikacji bez abonamentu (Bolt, Uber, Glovo…) z przypisaną metodą płatności (pola cyklu oraz cena pozostają puste/`null`), w celu monitorowania integralności metody płatności i uwzględniania w migracji karty. Domyślny status to `active` (może zostać `cancelled` lub soft-deleted).
 *   **Kategorie:** prosta lista definiowana przez użytkownika (rozrywka, transport, chmura…).
 
-### 3.3 Rejestr transakcyjny i rozliczenia współdzielone
-*   **Profile współużytkowników:** lokalne profile osób (np. Kamil, Ania). Właściciel ma własny profil z flagą `is_me`.
-*   **Uczestnicy subskrypcji:** przy subskrypcji rodzinnej użytkownik wskazuje osoby partycypujące w kosztach (właściciel jest uczestnikiem domyślnie), z datą dołączenia i opcjonalną datą odejścia.
-*   **Tryby podziału:**
-    *   `equal` (domyślny): po równo między uczestników,
-    *   `percent`: udział procentowy per osoba,
-    *   `fixed`: stała kwota per osoba, resztę pokrywa płatnik.
-*   **Księgowość transakcyjna (rekord po rekordzie):** w każdym cyklu płatności system rejestruje **zdarzenie płatności** (usługa, data, kwota). Dla każdego uczestnika innego niż płatnik powstaje osobna **należność**: `Osoba - Usługa - Data naliczenia - Kwota - Status (rozliczono: TAK/NIE)`.
-*   **Kierunek „ja jestem winny”:** jeśli płatnikiem subskrypcji jest inna osoba (np. Ania płaci za YouTube Premium), należności powstają po stronie właściciela. Bilans pokazuje obie strony bez potrzeby parowania kont.
-*   **Panel księgowy:** filtrowanie należności po osobie, usłudze, statusie i okresie. Można rozliczać pojedyncze należności lub ich grupy (np. zamknięcie długu za Spotify bez ruszania długu za Netflix) oraz cofnąć rozliczenie. Panel pokazuje saldo per osoba i per waluta.
-
-### 3.4 Pulpit „Wymaga uwagi”
+### 3.3 Pulpit „Wymaga uwagi” i podsumowanie kosztów
 Ekran startowy agregujący:
 *   karty przekraczające progi ważności oraz otwarte migracje kart,
 *   usługi, których metoda płatności (bezpośrednio lub w łańcuchu) jest wygasła lub zarchiwizowana,
 *   triale kończące się w najbliższym czasie,
 *   płatności w ciągu najbliższych 7 dni,
-*   suma kosztów miesięcznych i rocznych (osobno per waluta, łącznie i „mój udział”).
-
-W MVP alerty są widoczne w aplikacji. Powiadomienia push i e-mail są w wersji 1.1.
+*   **suma kosztów miesięcznych i rocznych** (osobno per waluta):
+    *   wliczane są subskrypcje o statusie `active` (wg ceny obowiązującej „dziś”); `paused` i `cancelled` są pomijane, a koszt subskrypcji w `trial` może być pokazany osobno jako informacja o nadchodzących kosztach po zakończeniu okresu próbnego.
 
 ---
 
@@ -118,14 +112,11 @@ Wszystkie tabele mają dodatkowo: `id` (UUID v7, PK), `created_at`, `updated_at`
 
 | Tabela | Kolumny | Uwagi |
 |---|---|---|
-| `persons` | `name`, `is_me`, `linked_account_id` (null) | dokładnie jedna osoba z `is_me = 1`; `linked_account_id` zarezerwowane na parowanie w v2 |
-| `payment_methods` | `name`, `kind`, `card_brand` (null), `expiry_month` (null), `expiry_year` (null), `funded_by_id` (FK → `payment_methods`, null), `replaces_id` (FK → `payment_methods`, null), `archived_at` (null) | pola karty tylko dla `kind = card`; `funded_by_id` tylko dla typów innych niż karta |
+| `payment_methods` | `name`, `kind`, `card_brand` (null), `last4` (null), `expiry_month` (null), `expiry_year` (null), `funded_by_id` (FK → `payment_methods`, null), `replaces_id` (FK → `payment_methods`, null), `archived_at` (null) | pola karty (`card_brand`, `last4`, `expiry_*`) tylko dla `kind = card`; `funded_by_id` tylko dla typów innych niż karta |
 | `categories` | `name` | |
-| `services` | `name`, `kind` (`subscription` / `on_demand`), `category_id` (null), `payment_method_id` (null), `payer_person_id`, `status`, `interval_unit` (`week` / `month` / `year`), `interval_count`, `billing_anchor_date`, `trial_ends_at` (null), `paid_until` (null), `split_mode`, `notes` | pola cyklu tylko dla subskrypcji; `payment_method_id` może być pusta, gdy płaci inna osoba |
-| `service_prices` | `service_id`, `amount_minor`, `currency`, `valid_from` | cena obowiązująca w dniu X to rekord z największym `valid_from ≤ X` |
-| `service_participants` | `service_id`, `person_id`, `share_value` (null), `joined_at`, `left_at` (null) | `share_value`: punkty bazowe (`percent`, suma 10000) lub kwota w groszach (`fixed`) |
-| `billing_events` | `service_id`, `period_start`, `amount_minor`, `currency` | UNIQUE(`service_id`, `period_start`); historia faktycznych płatności |
-| `charges` | `billing_event_id`, `person_id`, `amount_minor`, `currency`, `settled_at` (null) | UNIQUE(`billing_event_id`, `person_id`); należność wobec płatnika |
+| `services` | `name`, `kind` (`subscription` / `on_demand`), `category_id` (null), `payment_method_id` (null), `status`, `interval_unit` (`week` / `month` / `year`, null), `interval_count` (null), `billing_anchor_date` (null), `trial_ends_at` (null), `paid_until` (null), `notes` (null) | pola cyklu (`interval_unit`, `interval_count`, `billing_anchor_date`) wyłącznie dla `kind = subscription`; puste dla `on_demand` |
+| `service_prices` | `service_id`, `amount_minor`, `currency`, `valid_from` | `UNIQUE(service_id, valid_from)` (dla aktywnych wpisów); cena w dniu X to rekord z największym `valid_from ≤ X` |
+| `billing_events` | `service_id`, `period_start`, `amount_minor`, `currency` | `UNIQUE(service_id, period_start)`; historia faktycznych płatności |
 | `card_migrations` | `old_method_id`, `new_method_id` (null), `completed_at` (null) | |
 | `card_migration_items` | `migration_id`, `service_id` (null), `payment_method_id` (null), `done_at` (null) | pozycja dotyczy usługi bezpośredniej albo pośrednika |
 | `settings` | `key`, `value` | progi alertów, strefa czasowa, retencja backupu |
@@ -135,14 +126,16 @@ Wszystkie tabele mają dodatkowo: `id` (UUID v7, PK), `created_at`, `updated_at`
 ## 5. Reguły Biznesowe
 *   **Strefa czasowa:** wszystkie obliczenia dat w strefie `Europe/Warsaw` (konfigurowalnej). „Dziś” to data lokalna.
 *   **Koniec miesiąca:** kolejne daty płatności liczy się zawsze od `billing_anchor_date`, a nie od poprzedniej płatności. Jeśli dany miesiąc nie ma dnia z daty bazowej, płatność przypada na jego ostatni dzień (31.01 → 28.02 → 31.03).
-*   **Ważność karty:** karta MM/RR jest ważna do ostatniego dnia miesiąca MM włącznie.
-*   **Zaokrąglenia:** udziały liczone w groszach, zaokrąglane w dół. Reszta (różnica do kwoty całkowitej) przypada płatnikowi. Przykład: 49,99 zł / 3 = 16,66 + 16,66 + 16,67 (płatnik).
-*   **Uczestnictwo w okresie:** osoba uczestniczy w zdarzeniu płatności, jeśli `joined_at ≤ period_start` i (`left_at` puste lub `period_start < left_at`). Zmiany uczestników nie modyfikują istniejących należności.
-*   **Scheduler (generator płatności):** uruchamiany przy starcie serwera i codziennie o 06:00. Dla każdej subskrypcji generuje wszystkie brakujące zdarzenia płatności z `period_start ≤ dziś`, wraz z należnościami. Działa **nadrabiająco** (serwer mógł być wyłączony) i **idempotentnie**: ponowne uruchomienie nie tworzy duplikatów, co gwarantują ograniczenia UNIQUE.
-*   **Statusy a generowanie:** `trial` generuje dopiero od `trial_ends_at`; `paused` nie generuje; `cancelled` generuje tylko do `paid_until` włącznie.
-*   **Waluty:** brak przeliczeń kursowych w MVP. Sumy i salda pokazywane osobno dla każdej waluty.
+*   **Normalizacja kosztów miesięcznych i rocznych (zaokrąglenie do najbliższego grosza/centa):**
+    *   `month` (co `N`): miesięczny = `kwota / N`, roczny = `kwota * 12 / N`.
+    *   `year` (co `N`): roczny = `kwota / N`, miesięczny = `kwota / (12 * N)`.
+    *   `week` (co `N`): roczny = `kwota * 52 / N`, miesięczny = `roczny / 12`.
+*   **Ważność karty:** karta `MM/RR` jest ważna do ostatniego dnia miesiąca `MM` włącznie.
+*   **Scheduler (generator płatności):** uruchamiany przy starcie serwera i codziennie o 06:00. Dla każdej subskrypcji generuje wszystkie brakujące zdarzenia płatności (`billing_events`) z `period_start ≤ dziś`. Działa **nadrabiająco** (serwer mógł być wyłączony) i **idempotentnie**: ponowne uruchomienie nie tworzy duplikatów, co gwarantuje `UNIQUE(service_id, period_start)`.
+*   **Statusy a generowanie:** `trial` generuje pierwszą płatność od `trial_ends_at` i automatycznie przechodzi na `active`; `paused` nie generuje; `cancelled` generuje tylko do `paid_until` włącznie.
+*   **Waluty:** brak przeliczeń kursowych w MVP. Sumy pokazywane osobno dla każdej waluty.
 *   **Archiwizacja metody płatności:** nie usuwa powiązań. Usługi korzystające z niej (bezpośrednio lub przez łańcuch) trafiają na pulpit „Wymaga uwagi” z komunikatem o braku aktywnej metody płatności.
-*   **Usuwanie:** usunięcie usługi lub osoby to soft-delete. Zdarzenia płatności i należności pozostają w historii (z nazwą usługi lub osoby oznaczoną jako usunięta).
+*   **Usuwanie:** usunięcie usługi, kategorii lub metody płatności to soft-delete (`deleted_at`). Zdarzenia płatności (`billing_events`) pozostają w historii na zawsze (z nazwą usługi oznaczoną jako usunięta).
 
 ---
 
@@ -151,26 +144,32 @@ Moduły implementowane (również przez agenta AI) uznaje się za ukończone wy�
 
 1.  **Build i jakość:** `npm run build`, `npm run typecheck` i `npm run lint` kończą się bez błędów i bez ostrzeżeń.
 2.  **Testy logiki:** testy Vitest dla `domain/` przechodzą i obejmują co najmniej:
-    *   daty płatności dla dnia 29–31, lat przestępnych, cykli tygodniowych, miesięcznych, rocznych i co N,
-    *   podział kosztów we wszystkich trybach wraz z regułą zaokrągleń,
+    *   daty płatności dla dnia 29–31, lat przestępnych, cykli tygodniowych, miesięcznych, rocznych i co `N`,
+    *   normalizację kosztów miesięcznych i rocznych dla wszystkich cykli i statusów,
     *   idempotencję i nadrabianie schedulera (wielokrotne uruchomienie, przerwa kilku cykli),
-    *   statusy `trial`, `paused`, `cancelled` oraz zmianę ceny w trakcie,
+    *   statusy `trial` (z przejściem na `active`), `paused` (ze wznowieniem), `cancelled` (`paid_until`) oraz zmianę ceny w trakcie,
     *   ważność kart i progi alertów,
-    *   budowę checklisty migracji karty z pośrednikami (w tym łańcuchy i blokadę cykli).
-3.  **Spójność danych:** baza powstaje z migracji na pustym pliku; klucze obce są wymuszane; rekordy finansowe nie są usuwane; archiwizacja metody płatności poprawnie oznacza zależne usługi.
-4.  **UI/UX:** interfejs jest responsywny od 360 px szerokości do desktopu, sprawdzony w Chrome (desktop) i Safari (iPhone). Dark Mode jest motywem domyślnym, a aplikację da się zainstalować na ekranie głównym iPhone'a.
+    *   budowę i aktualizację checklisty migracji karty z pośrednikami (w tym łańcuchy do głębokości 5, blokadę cykli, migrację bez `new_method_id` oraz auto-archiwizację po ukończeniu).
+3.  **Spójność danych:** baza powstaje z migracji na pustym pliku; klucze obce są wymuszane; rekordy finansowe nie są usuwane; archiwizacja metody płatności poprawnie oznacza zależne usługi; eksport/import JSON działa transakcyjnie z kopią bezpieczeństwa.
+4.  **UI/UX:** interfejs działa płynnie i przejrzyście w przeglądarce desktopowej (Brave/Chrome na Windows), z zachowaniem responsywnego układu. Dark Mode jest motywem domyślnym.
 5.  **Autonomia:** aplikacja w czasie działania nie wykonuje żadnych żądań do zewnętrznych serwerów. Czcionki, ikony i biblioteki są dołączone do builda.
-6.  **Architektura:** zachowany podział warstw z sekcji 2.2 (`domain/` bez zależności od pozostałych warstw), a kod ma komentarze strukturalne ułatwiające samodzielną modyfikację.
-7.  **Dokumentacja:** README opisuje uruchomienie, konfigurację (`APP_PASSWORD`, port, ścieżka bazy), backup i odtworzenie z kopii.
+6.  **Architektura:** zachowany podział warstw z sekcji 2.2 (`domain/` bez zależności od pozostałych warstw, egzekwowane przez ESLint), a kod ma komentarze strukturalne ułatwiające samodzielną modyfikację.
+7.  **Dokumentacja:** `README.md` opisuje uruchomienie, konfigurację (`APP_PASSWORD`, port, ścieżka bazy), backup i odtworzenie z kopii.
 
 ---
 
 ## 7. Krokowa Mapa Drogowa Przyszłego Rozwoju (Roadmap)
 
-### Wersja 1.1 – Powiadomienia i wygoda
-*   Powiadomienia push na iPhone'a przez [ntfy](https://ntfy.sh) (własny serwer lub publiczny) i/lub e-mail. Funkcja opcjonalna, włączana przez użytkownika.
+### Wersja 1.1 – Powiadomienia, mobilność webowa i wygoda
+*   Powiadomienia push przez [ntfy](https://ntfy.sh) (własny serwer lub publiczny) i/lub e-mail. Funkcja opcjonalna, włączana przez użytkownika.
+*   Pełne dopracowanie pod mobile web / PWA (iPhone Safari „Dodaj do ekranu głównego”, manifest, ikony).
 *   Jasny motyw do wyboru.
-*   Proste statystyki: koszt per kategoria, prognoza roczna.
+*   Proste statystyki: koszt per kategoria, prognoza roczna, historia wydatków z `billing_events`.
+
+### Wersja 1.2 – Współdzielenie kosztów i rozliczenia rodzinne (osobny feature)
+*   Lokalne profile osób (`persons`, w tym `is_me`), uczestnicy subskrypcji (`service_participants` z `joined_at`/`left_at`).
+*   Tryby podziału (`equal`, `percent`, `fixed`) wraz ze szczegółową analizą przypadków brzegowych (zmiana ceny, odejście uczestnika, rola płatnika).
+*   Należności per zdarzenie płatności (`charges`) oraz panel księgowy rozliczeń (kto komu ile jest winien i za co).
 
 ### Wersja 2.0 – Upublicznienie i aplikacja mobilna
 Realizowana tylko, jeśli etap 1 się sprawdzi.
@@ -191,6 +190,7 @@ Model danych i API pozostawiają przestrzeń na:
 
 ---
 
-## 8. Decyzje Otwarte
-*   Czy zapisywać ostatnie 4 cyfry karty? Pomagają odróżnić karty o podobnych nazwach i według standardu PCI DSS nie są daną wrażliwą, ale wykraczają poza obecną zasadę „tylko nazwa i data ważności”.
-*   Czy pośrednik może mieć kilka metod finansujących (np. PayPal z kartą główną i zapasową)? W MVP przyjęto jedną.
+## 8. Decyzje Rozstrzygnięte dla MVP
+*   **Ostatnie 4 cyfry karty (`last4`):** dodajemy jako opcjonalne pole dla kart (`kind = 'card'`), aby ułatwić rozróżnianie kart o podobnych nazwach (nie jest daną wrażliwą wg PCI DSS).
+*   **Metody finansujące pośrednika:** w MVP zostaje jedna metoda finansująca (`funded_by_id`) na pośrednika.
+*   **Współdzielenie kosztów i rozliczenia:** odroczone z MVP do wersji 1.2 jako osobny feature z dedykowanym projektem przypadków użycia.
